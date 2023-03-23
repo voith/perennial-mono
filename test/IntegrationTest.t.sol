@@ -29,7 +29,6 @@ import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.so
 import "./mocks/ChainlinkTCAPAggregatorV3.sol";
 
 
-
 contract IntegrationTest is Test {
     TestnetUSDC USDC;
     TestnetDSU DSU;
@@ -57,12 +56,19 @@ contract IntegrationTest is Test {
     BalancedVault vaultImpl;
     TransparentUpgradeableProxy vaultProxy;
     BalancedVault vault;
+    IProduct long;
+    IProduct short;
 
     // cryptex controlled contracts
     uint256 coordinatorID;
 
     address perennialOwner = address(0x51);
     address cryptexOwner = address(0x52);
+    address userA = address(0x53);
+    address userB = address(0x54);
+    address userC = address(0x55);
+
+    event AccountSettle(IProduct indexed product, address indexed account, Fixed18 amount, UFixed18 newShortfall);
 
     function setUp() external {
         vm.startPrank(perennialOwner);
@@ -132,9 +138,9 @@ contract IntegrationTest is Test {
               targetUtilization: PackedUFixed18.wrap(uint128(parseEther(80) / 100))
             })
         });
-        IProduct long = controller.createProduct(coordinatorID, productInfo);
+        long = controller.createProduct(coordinatorID, productInfo);
         productInfo.payoffDefinition.payoffDirection = PayoffDefinitionLib.PayoffDirection.SHORT;
-        IProduct short = controller.createProduct(coordinatorID, productInfo);
+        short = controller.createProduct(coordinatorID, productInfo);
         vaultImpl = new BalancedVault(
             Token18.wrap(address(DSU)), controller, long, short, UFixed18.wrap(parseEther(25) / 10), UFixed18.wrap(parseEther(3000000))
         );
@@ -142,6 +148,14 @@ contract IntegrationTest is Test {
         vault = BalancedVault(address(vaultProxy));
         vault.initialize('Cryptex Vault Alpha', 'CVA');
         vm.stopPrank();
+
+        vm.deal(userA, 30000 ether);
+        vm.deal(userB, 30000 ether);
+        vm.deal(userC, 30000 ether);
+        deal({token: address(DSU), to: userA, give: 30000 ether});
+        deal({token: address(DSU), to: userB, give: 30000 ether});
+        deal({token: address(DSU), to: userC, give: 30000 ether});
+        tcapOracle.next();
     }
 
     function testPerennialSetup() external {
@@ -150,5 +164,74 @@ contract IntegrationTest is Test {
         assertEq(address(controller.productBeacon()), address(productBeacon));
         assertEq(proxyAdmin.owner(), perennialOwner);
         assertEq(address(controller.coordinators(0).pendingOwner), perennialOwner);
+        assertEq(address(multiInvoker.batcher()), address(batcher));
+        assertEq(address(multiInvoker.reserve()), address(reserve));
+    }
+
+    function testCryptexSetup() external {
+        assertEq(address(vault.controller()), address(controller));
+        assertEq(address(vault.collateral()), address(collateral));
+        assertEq(address(vault.long()), address(long));
+        assertEq(address(vault.short()), address(short));
+    }
+
+    function depositTo(address account, IProduct _product, UFixed18 position) public {
+        vm.startPrank(account);
+        DSU.approve(address(collateral), uint256(UFixed18.unwrap(position)));
+        collateral.depositTo(account, _product, position);
+        vm.stopPrank();
+    }
+
+    function testOpenPositionFees() external {
+        UFixed18 initialCollateral = UFixed18.wrap(20000 ether);
+        Fixed18 makerPosition = Fixed18.wrap(int256(parseEther(1) / 1000));
+        Fixed18 takerPosition = Fixed18.wrap(int256(parseEther(1) / 1000));
+        Fixed18 makerFeeRate = Fixed18.wrap(int256(parseEther(15) / 1000));
+        Fixed18 takerFeeRate = Fixed18.wrap(int256(parseEther(15) / 1000));
+
+        depositTo(userA, long, initialCollateral);
+        depositTo(userB, long, initialCollateral);
+        depositTo(userC, long, initialCollateral);
+
+        IOracleProvider.OracleVersion memory currentVersion = long.currentVersion();
+        Fixed18 makerFee = makerPosition.mul(currentVersion.price).mul(makerFeeRate);
+        Fixed18 takerFee = takerPosition.mul(currentVersion.price).mul(takerFeeRate);
+
+        vm.startPrank(userA);
+        vm.expectEmit(true, true, true, true, address(collateral));
+        emit AccountSettle(long, userA, Fixed18(makerFee).mul(Fixed18.wrap(int256(-1))), UFixed18.wrap(0));
+        long.openMake(UFixed18.wrap(uint256(Fixed18.unwrap(makerPosition))));
+        vm.stopPrank();
+
+        vm.startPrank(userB);
+        vm.expectEmit(true, true, true, true, address(collateral));
+        emit AccountSettle(long, userB, Fixed18(makerFee).mul(Fixed18.wrap(int256(-2))), UFixed18.wrap(0));
+        long.openMake(UFixed18.wrap(uint256(Fixed18.unwrap(makerPosition.mul(Fixed18.wrap(int256(2)))))));
+        vm.stopPrank();
+
+        vm.startPrank(userC);
+        vm.expectEmit(true, true, true, true, address(collateral));
+        emit AccountSettle(long, userC, takerFee.mul(Fixed18.wrap(int256(-1))), UFixed18.wrap(0));
+        long.openTake(UFixed18.wrap(uint256(Fixed18.unwrap(takerPosition))));
+        vm.stopPrank();
+
+        assertEq(
+            UFixed18.unwrap(collateral.collateral(userA, long)),
+            UFixed18.unwrap(initialCollateral.sub(UFixed18.wrap(uint256(Fixed18.unwrap(makerFee)))))
+        );
+        assertEq(
+            UFixed18.unwrap(collateral.collateral(userB, long)),
+            UFixed18.unwrap(initialCollateral.sub(UFixed18.wrap(uint256(Fixed18.unwrap(makerFee.mul(Fixed18.wrap(int256(2))))))))
+        );
+        assertEq(
+            UFixed18.unwrap(collateral.collateral(userC, long)),
+            UFixed18.unwrap(initialCollateral.sub(UFixed18.wrap(uint256(Fixed18.unwrap(takerFee)))))
+        );
     }
 }
+
+//        console.log("fee");
+//        console.log(uint256(Fixed18.unwrap(currentVersion.price)));
+//        console.log(uint256(Fixed18.unwrap(makerPosition)));
+//        console.log(uint256(Fixed18.unwrap(makerFee)));
+//        console.log(uint256(Fixed18.unwrap(Fixed18Lib.from(-1, UFixed18Lib.from(makerFee)))));

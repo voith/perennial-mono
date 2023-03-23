@@ -11,10 +11,21 @@ contract ChainlinkTCAPAggregatorV3 {
   }
   mapping(uint80 => RoundData) roundDataHistory;
   error RoundIdMissing();
-  RoundData _latestRoundData;
+  RoundData _latestRoundData = RoundData({
+    roundId: uint80(18446744073709551734),
+    answer: int256(122149510910889330000),
+    startedAt: uint256(1679508968),
+    updatedAt: uint256(1679508968),
+    answeredInRound: uint80(18446744073709551734)
+  });
+
+  constructor() {
+    roundDataHistory[_latestRoundData.roundId] = _latestRoundData;
+  }
 
   function decimals() external view returns (uint8) {
-    return uint8(8);
+//    TODO: Change this to 8 and instead work with a payoff function
+    return uint8(18);
   }
 
   function getRoundData(uint80 _roundId)
@@ -54,12 +65,12 @@ contract ChainlinkTCAPAggregatorV3 {
     answeredInRound = _latestRoundData.answeredInRound;
   }
 
-  function setLatestRoundData(RoundData memory _roundData) external {
-    _latestRoundData = _roundData;
-//    roundId = uint80(18446744073709551734);
-//    answer = int256(318457408617600350);
-//    startedAt = uint256(1679508968);
-//    updatedAt = uint256(1679508968);
-//    answeredInRound = uint80(18446744073709551734);
+  function next() external {
+    _latestRoundData.roundId = _latestRoundData.roundId + 1;
+    _latestRoundData.answer = (_latestRoundData.answer * 101) / 100;
+    _latestRoundData.startedAt = _latestRoundData.startedAt + 1;
+    _latestRoundData.updatedAt = _latestRoundData.updatedAt + 1;
+    _latestRoundData.answeredInRound = _latestRoundData.answeredInRound + 1;
+    roundDataHistory[_latestRoundData.roundId] = _latestRoundData;
   }
 }
