@@ -58,6 +58,10 @@ contract IntegrationTest is Test {
     BalancedVault vault;
     IProduct long;
     IProduct short;
+    ChainlinkTCAPAggregatorV3 tcapOracle;
+
+    Fixed18 makerFeeRate = Fixed18Lib.from(int256(15)).div(Fixed18Lib.from(int256(1000)));
+    Fixed18 takerFeeRate = Fixed18Lib.from(int256(15)).div(Fixed18Lib.from(int256(1000)));
 
     // cryptex controlled contracts
     uint256 coordinatorID;
@@ -67,6 +71,8 @@ contract IntegrationTest is Test {
     address userA = address(0x53);
     address userB = address(0x54);
     address userC = address(0x55);
+    address cryptexTreasury = address(0x56);
+    address perennialTreasury = address(0x57);
 
     event AccountSettle(IProduct indexed product, address indexed account, Fixed18 amount, UFixed18 newShortfall);
 
@@ -97,6 +103,8 @@ contract IntegrationTest is Test {
         collateral.initialize(controller);
         controller.initialize(collateral, incentivizer, productBeacon);
         controller.updateCoordinatorPendingOwner(0, perennialOwner);
+        controller.updateCoordinatorTreasury(0, perennialTreasury);
+        controller.updateProtocolFee(UFixed18.wrap(0));
         lens = new PerennialLens(controller);
         forwarder = new Forwarder(Token6.wrap(address(USDC)), Token18.wrap(address(DSU)), batcher, collateral);
         multiInvokerImpl = new MultiInvoker(Token6.wrap(address(USDC)), batcher, reserve, controller);
@@ -114,7 +122,7 @@ contract IntegrationTest is Test {
     function cryptexSetup() public {
         vm.startPrank(cryptexOwner);
         coordinatorID = controller.createCoordinator();
-        ChainlinkTCAPAggregatorV3 tcapOracle = new ChainlinkTCAPAggregatorV3();
+        tcapOracle = new ChainlinkTCAPAggregatorV3();
         ChainlinkFeedOracle oracle = new ChainlinkFeedOracle(ChainlinkAggregator.wrap(address(tcapOracle)));
         IProduct.ProductInfo memory productInfo = IProduct.ProductInfo({
             name: 'Total Market Cap',
@@ -125,24 +133,30 @@ contract IntegrationTest is Test {
                 data: bytes30('')
             }),
             oracle: oracle,
-            maintenance: UFixed18.wrap(parseEther(10) / 100),
-            fundingFee: UFixed18.wrap(parseEther(5) / 100),
-            makerFee: UFixed18.wrap(parseEther(15) / 1000),
-            takerFee: UFixed18.wrap(parseEther(15) / 1000),
-            positionFee: UFixed18.wrap(parseEther(100) / 1000),
+            maintenance: UFixed18Lib.from(10).div(UFixed18Lib.from(100)),
+            fundingFee: UFixed18Lib.from(5).div(UFixed18Lib.from(100)),
+            makerFee: UFixed18Lib.from(15).div(UFixed18Lib.from(1000)),
+            takerFee: UFixed18Lib.from(15).div(UFixed18Lib.from(1000)),
+            positionFee: UFixed18Lib.from(100).div(UFixed18Lib.from(100)),
             makerLimit: UFixed18.wrap(parseEther(4000)),
             utilizationCurve: JumpRateUtilizationCurve({
-              minRate: PackedFixed18.wrap(int128(uint128(parseEther(0)))),
-              maxRate: PackedFixed18.wrap(int128(uint128(parseEther(80) / 100))),
-              targetRate: PackedFixed18.wrap(int128(uint128(parseEther(6) / 100))),
-              targetUtilization: PackedUFixed18.wrap(uint128(parseEther(80) / 100))
+              minRate: Fixed18Lib.from(int256(0)).pack(),
+              maxRate: Fixed18Lib.from(int256(80)).div(Fixed18Lib.from(int256(100))).pack(),
+              targetRate: Fixed18Lib.from(int256(6)).div(Fixed18Lib.from(int256(100))).pack(),
+              targetUtilization: UFixed18Lib.from(80).div(UFixed18Lib.from(100)).pack()
             })
         });
         long = controller.createProduct(coordinatorID, productInfo);
         productInfo.payoffDefinition.payoffDirection = PayoffDefinitionLib.PayoffDirection.SHORT;
         short = controller.createProduct(coordinatorID, productInfo);
+        controller.updateCoordinatorTreasury(coordinatorID, cryptexTreasury);
         vaultImpl = new BalancedVault(
-            Token18.wrap(address(DSU)), controller, long, short, UFixed18.wrap(parseEther(25) / 10), UFixed18.wrap(parseEther(3000000))
+            Token18.wrap(address(DSU)),
+            controller,
+            long,
+            short,
+            UFixed18.wrap(parseEther(25) / 10),
+            UFixed18.wrap(parseEther(3000000))
         );
         vaultProxy = new TransparentUpgradeableProxy(address(vaultImpl), address(proxyAdmin), bytes(''));
         vault = BalancedVault(address(vaultProxy));
@@ -152,9 +166,9 @@ contract IntegrationTest is Test {
         vm.deal(userA, 30000 ether);
         vm.deal(userB, 30000 ether);
         vm.deal(userC, 30000 ether);
-        deal({token: address(DSU), to: userA, give: 30000 ether});
-        deal({token: address(DSU), to: userB, give: 30000 ether});
-        deal({token: address(DSU), to: userC, give: 30000 ether});
+        deal({token: address(DSU), to: userA, give: 1000000 ether});
+        deal({token: address(DSU), to: userB, give: 1000000 ether});
+        deal({token: address(DSU), to: userC, give: 1000000 ether});
         tcapOracle.next();
     }
 
@@ -183,11 +197,9 @@ contract IntegrationTest is Test {
     }
 
     function testOpenPositionFees() external {
-        UFixed18 initialCollateral = UFixed18.wrap(20000 ether);
-        Fixed18 makerPosition = Fixed18.wrap(int256(parseEther(1) / 1000));
-        Fixed18 takerPosition = Fixed18.wrap(int256(parseEther(1) / 1000));
-        Fixed18 makerFeeRate = Fixed18.wrap(int256(parseEther(15) / 1000));
-        Fixed18 takerFeeRate = Fixed18.wrap(int256(parseEther(15) / 1000));
+        UFixed18 initialCollateral = UFixed18Lib.from(20000);
+        Fixed18 makerPosition = Fixed18Lib.from(int256(1)).div(Fixed18Lib.from(int256(1000))); // 0.001
+        Fixed18 takerPosition = Fixed18Lib.from(int256(1)).div(Fixed18Lib.from(int256(1000))); // 0.001
 
         depositTo(userA, long, initialCollateral);
         depositTo(userB, long, initialCollateral);
@@ -200,38 +212,59 @@ contract IntegrationTest is Test {
         vm.startPrank(userA);
         vm.expectEmit(true, true, true, true, address(collateral));
         emit AccountSettle(long, userA, Fixed18(makerFee).mul(Fixed18.wrap(int256(-1))), UFixed18.wrap(0));
-        long.openMake(UFixed18.wrap(uint256(Fixed18.unwrap(makerPosition))));
+        long.openMake(UFixed18Lib.from(makerPosition));
         vm.stopPrank();
 
         vm.startPrank(userB);
         vm.expectEmit(true, true, true, true, address(collateral));
         emit AccountSettle(long, userB, Fixed18(makerFee).mul(Fixed18.wrap(int256(-2))), UFixed18.wrap(0));
-        long.openMake(UFixed18.wrap(uint256(Fixed18.unwrap(makerPosition.mul(Fixed18.wrap(int256(2)))))));
+        long.openMake(UFixed18Lib.from(makerPosition.mul(Fixed18Lib.from(int256(2)))));
         vm.stopPrank();
 
         vm.startPrank(userC);
         vm.expectEmit(true, true, true, true, address(collateral));
         emit AccountSettle(long, userC, takerFee.mul(Fixed18.wrap(int256(-1))), UFixed18.wrap(0));
-        long.openTake(UFixed18.wrap(uint256(Fixed18.unwrap(takerPosition))));
+        long.openTake(UFixed18Lib.from(takerPosition));
         vm.stopPrank();
 
         assertEq(
             UFixed18.unwrap(collateral.collateral(userA, long)),
-            UFixed18.unwrap(initialCollateral.sub(UFixed18.wrap(uint256(Fixed18.unwrap(makerFee)))))
+            UFixed18.unwrap(initialCollateral.sub(UFixed18Lib.from(makerFee)))
         );
         assertEq(
             UFixed18.unwrap(collateral.collateral(userB, long)),
-            UFixed18.unwrap(initialCollateral.sub(UFixed18.wrap(uint256(Fixed18.unwrap(makerFee.mul(Fixed18.wrap(int256(2))))))))
+            UFixed18.unwrap(initialCollateral.sub(UFixed18Lib.from(makerFee.mul(Fixed18Lib.from(int256(2))))))
         );
         assertEq(
             UFixed18.unwrap(collateral.collateral(userC, long)),
-            UFixed18.unwrap(initialCollateral.sub(UFixed18.wrap(uint256(Fixed18.unwrap(takerFee)))))
+            UFixed18.unwrap(initialCollateral.sub(UFixed18Lib.from(takerFee)))
         );
     }
-}
 
-//        console.log("fee");
-//        console.log(uint256(Fixed18.unwrap(currentVersion.price)));
-//        console.log(uint256(Fixed18.unwrap(makerPosition)));
-//        console.log(uint256(Fixed18.unwrap(makerFee)));
-//        console.log(uint256(Fixed18.unwrap(Fixed18Lib.from(-1, UFixed18Lib.from(makerFee)))));
+    function testCreditFeesTOTreasury() external {
+        UFixed18 initialCollateral = UFixed18Lib.from(20000);
+        Fixed18 makerPosition = Fixed18Lib.from(int256(1)).div(Fixed18Lib.from(int256(1000))); // 0.001
+        Fixed18 takerPosition = Fixed18Lib.from(int256(1)).div(Fixed18Lib.from(int256(1000))); // 0.001
+
+        depositTo(userA, long, initialCollateral);
+        depositTo(userB, long, initialCollateral);
+        depositTo(userC, long, initialCollateral);
+
+        vm.prank(userA);
+        long.openMake(UFixed18Lib.from(makerPosition));
+        vm.prank(userB);
+        long.openMake(UFixed18Lib.from(makerPosition.mul(Fixed18Lib.from(int256(2)))));
+        vm.prank(userC);
+        long.openTake(UFixed18Lib.from(takerPosition));
+
+        IOracleProvider.OracleVersion memory currentVersion = long.currentVersion();
+        Fixed18 makerFee = makerPosition.mul(Fixed18Lib.from(int256(3))).mul(currentVersion.price).mul(makerFeeRate);
+        Fixed18 takerFee = takerPosition.mul(currentVersion.price).mul(takerFeeRate);
+        Fixed18 totalFee = makerFee.add(takerFee);
+
+        tcapOracle.next();
+        long.settle();
+        assertEq(UFixed18.unwrap(collateral.fees(perennialTreasury)), 0);
+        assertEq(UFixed18.unwrap(collateral.fees(cryptexTreasury)), UFixed18.unwrap(UFixed18Lib.from(totalFee)));
+    }
+}
