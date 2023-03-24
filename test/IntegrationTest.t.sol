@@ -27,6 +27,7 @@ import "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 
 import "./mocks/ChainlinkTCAPAggregatorV3.sol";
+import "./contracts/TcapPayoffProvider.sol";
 
 
 contract IntegrationTest is Test {
@@ -124,13 +125,14 @@ contract IntegrationTest is Test {
         coordinatorID = controller.createCoordinator();
         tcapOracle = new ChainlinkTCAPAggregatorV3();
         ChainlinkFeedOracle oracle = new ChainlinkFeedOracle(ChainlinkAggregator.wrap(address(tcapOracle)));
+        TcapPayoffProvider payoffProvider = new TcapPayoffProvider();
         IProduct.ProductInfo memory productInfo = IProduct.ProductInfo({
             name: 'Total Market Cap',
             symbol: 'TCAP',
             payoffDefinition: PayoffDefinition({
-                payoffType: PayoffDefinitionLib.PayoffType.PASSTHROUGH,
+                payoffType: PayoffDefinitionLib.PayoffType.CONTRACT,
                 payoffDirection: PayoffDefinitionLib.PayoffDirection.LONG,
-                data: bytes30('')
+                data: bytes30(bytes20(address(payoffProvider))) >> 80
             }),
             oracle: oracle,
             maintenance: UFixed18Lib.from(10).div(UFixed18Lib.from(100)),

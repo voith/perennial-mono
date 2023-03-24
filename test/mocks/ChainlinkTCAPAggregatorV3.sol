@@ -24,8 +24,7 @@ contract ChainlinkTCAPAggregatorV3 {
   }
 
   function decimals() external view returns (uint8) {
-//    TODO: Change this to 8 and instead work with a payoff function
-    return uint8(18);
+    return uint8(8);
   }
 
   function getRoundData(uint80 _roundId)
